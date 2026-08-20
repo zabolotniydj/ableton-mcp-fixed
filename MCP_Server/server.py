@@ -2170,6 +2170,589 @@ def navigate_device_preset(
         return f"Error navigating preset: {str(e)}"
 
 
+@mcp.tool()
+def get_clip_notes(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Read the MIDI notes of a Session clip.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        ti = _to_zero_based(track_index, "track_index")
+        ci = _to_zero_based(clip_index, "clip_index")
+        r = ableton.send_command("get_clip_notes", {"track_index": ti, "clip_index": ci})
+        notes = r.get("notes", [])
+        lines = ["Clip '{0}' - {1} notes, {2} beats".format(
+            r.get("clip_name", ""), len(notes), r.get("length", 0)), "",
+            "  pitch   start    dur     vel"]
+        for n in sorted(notes, key=lambda x: (x["start_time"], x["pitch"])):
+            lines.append("  {0:5d}  {1:7.3f} {2:6.3f}  {3:6.1f}{4}".format(
+                int(n["pitch"]), n["start_time"], n["duration"], n["velocity"],
+                "  (muted)" if n.get("mute") else ""))
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error getting clip notes: {str(e)}")
+        return f"Error getting clip notes: {str(e)}"
+
+@mcp.tool()
+def clear_notes_from_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Remove every MIDI note from a Session clip, leaving the clip in place.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        ti = _to_zero_based(track_index, "track_index")
+        ci = _to_zero_based(clip_index, "clip_index")
+        r = ableton.send_command("clear_notes_from_clip",
+                                 {"track_index": ti, "clip_index": ci})
+        return "Cleared {0} notes from '{1}'".format(
+            r.get("cleared_count", 0), r.get("clip_name", ""))
+    except Exception as e:
+        logger.error(f"Error clearing notes: {str(e)}")
+        return f"Error clearing notes: {str(e)}"
+
+@mcp.tool()
+def replace_notes_in_clip(ctx: Context, track_index: int, clip_index: int,
+                          notes: List[Dict[str, Union[int, float, bool]]]) -> str:
+    """Replace a clip's contents: clear every existing note, then write these.
+
+    add_notes_to_clip only appends. This clears first, so the clip ends up with
+    exactly the notes given.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    - notes: Note dicts with pitch, start_time, duration, velocity, mute.
+    """
+    try:
+        ableton = get_ableton_connection()
+        ti = _to_zero_based(track_index, "track_index")
+        ci = _to_zero_based(clip_index, "clip_index")
+        cleared = ableton.send_command("clear_notes_from_clip",
+                                       {"track_index": ti, "clip_index": ci})
+        ableton.send_command("add_notes_to_clip",
+                             {"track_index": ti, "clip_index": ci, "notes": notes})
+        return "Replaced clip contents: removed {0} notes, wrote {1}".format(
+            cleared.get("cleared_count", 0), len(notes))
+    except Exception as e:
+        logger.error(f"Error replacing notes: {str(e)}")
+        return f"Error replacing notes: {str(e)}"
+
+@mcp.tool()
+def delete_clip(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Delete the clip in a Session slot, freeing the slot.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        ti = _to_zero_based(track_index, "track_index")
+        ci = _to_zero_based(clip_index, "clip_index")
+        r = ableton.send_command("delete_clip", {"track_index": ti, "clip_index": ci})
+        if not r.get("deleted"):
+            return "Nothing deleted: {0}".format(r.get("reason", "unknown"))
+        return "Deleted clip at track {0}, slot {1}".format(track_index, clip_index)
+    except Exception as e:
+        logger.error(f"Error deleting clip: {str(e)}")
+        return f"Error deleting clip: {str(e)}"
+
+@mcp.tool()
+def create_audio_track(ctx: Context, index: int = -1) -> str:
+    """Create a new audio track.
+
+    Parameters:
+    - index: Insert position (-1 = end of list).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("create_audio_track", {"index": index})
+        return "Created audio track: {0}".format(r.get("name", ""))
+    except Exception as e:
+        logger.error(f"Error creating audio track: {str(e)}")
+        return f"Error creating audio track: {str(e)}"
+
+@mcp.tool()
+def get_session_snapshot(ctx: Context, include_notes: bool = True,
+                         include_params: bool = False) -> str:
+    """Dump the whole project state in one call: tracks, clips, devices, scenes,
+    returns, master and cue points.
+
+    Parameters:
+    - include_notes: Include MIDI notes of every clip (large output).
+    - include_params: Include every device parameter (very large output).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("get_session_snapshot",
+                                 {"include_notes": include_notes,
+                                  "include_params": include_params})
+        return json.dumps(r, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting session snapshot: {str(e)}")
+        return f"Error getting session snapshot: {str(e)}"
+
+def _set_track_state_tool(track_index, mute=None, solo=None, arm=None):
+    """Shared body for the mute / solo / arm tools."""
+    try:
+        ableton = get_ableton_connection()
+        ti = _to_zero_based(track_index, "track_index")
+        payload = {"track_index": ti}
+        if mute is not None:
+            payload["mute"] = bool(mute)
+        if solo is not None:
+            payload["solo"] = bool(solo)
+        if arm is not None:
+            payload["arm"] = bool(arm)
+        r = ableton.send_command("set_track_state", payload)
+        changed = ", ".join("{0}={1}".format(k, v)
+                            for k, v in sorted(r.get("changed", {}).items()))
+        return "'{0}': {1}".format(r.get("track_name", ""), changed or "no change")
+    except Exception as e:
+        logger.error(f"Error setting track state: {str(e)}")
+        return f"Error setting track state: {str(e)}"
+
+@mcp.tool()
+def set_track_mute(ctx: Context, track_index: int, mute: bool) -> str:
+    """Mute or unmute a track.
+
+    Parameters:
+    - track_index: Track number (1-based). Return tracks come after session tracks.
+    - mute: True to mute, False to unmute.
+    """
+    return _set_track_state_tool(track_index, mute=mute)
+
+@mcp.tool()
+def set_track_solo(ctx: Context, track_index: int, solo: bool) -> str:
+    """Solo or unsolo a track.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - solo: True to solo, False to clear.
+    """
+    return _set_track_state_tool(track_index, solo=solo)
+
+@mcp.tool()
+def set_track_arm(ctx: Context, track_index: int, arm: bool) -> str:
+    """Arm or disarm a track for recording. Group and return tracks cannot be armed.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - arm: True to arm, False to disarm.
+    """
+    return _set_track_state_tool(track_index, arm=arm)
+
+@mcp.tool()
+def set_send_level(ctx: Context, track_index: int, send_index: int,
+                   value: float) -> str:
+    """Set one send level from a track to a return track.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - send_index: Send slot (1-based; send 1 feeds return A, 2 feeds B, ...).
+    - value: Normalized 0.0 (off) to 1.0 (max).
+    """
+    try:
+        ableton = get_ableton_connection()
+        ti = _to_zero_based(track_index, "track_index")
+        si = _to_zero_based(send_index, "send_index")
+        r = ableton.send_command("set_send_level",
+                                 {"track_index": ti, "send_index": si, "value": value})
+        return "'{0}' send {1} ({2}) -> {3:.3f}".format(
+            r.get("track_name", ""), send_index, r.get("send_name", ""),
+            r.get("value", 0.0))
+    except Exception as e:
+        logger.error(f"Error setting send level: {str(e)}")
+        return f"Error setting send level: {str(e)}"
+
+
+@mcp.tool()
+def describe_device_api(ctx: Context, track_index: int, device_index: int = 1,
+                        chain_index: int = 0) -> str:
+    """Report what a device object actually exposes in the running build of Live.
+
+    Device-specific classes (WavetableDevice, SimplerDevice, ...) carry members
+    that never appear in the parameter list. Use this to find them.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - device_index: Device number on the track (1-based).
+    - chain_index: Chain number inside a rack (1-based, 0 = not in a rack).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("describe_device_api", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "device_index": _to_zero_based(device_index, "device_index"),
+            "chain_index": _optional_to_zero_based(chain_index, "chain_index")})
+        lines = ["{0} ({1}) - {2} methods, {3} properties".format(
+            r.get("device_name"), r.get("class_name"),
+            r.get("method_count"), r.get("property_count")), ""]
+        lines.append("modulation API present:")
+        for k, v in sorted(r.get("modulation_api", {}).items()):
+            lines.append("  {0:<38} {1}".format(k, "YES" if v else "no"))
+        lines.append("")
+        lines.append("methods:")
+        for m in r.get("methods", []):
+            doc = (" - " + m["doc"].splitlines()[0]) if m.get("doc") else ""
+            lines.append("  {0}{1}".format(m["name"], doc))
+        lines.append("")
+        lines.append("properties:")
+        for p in r.get("properties", []):
+            lines.append("  {0:<38} {1}".format(
+                p["name"], p.get("type") or p.get("error", "")))
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error describing device api: {str(e)}")
+        return f"Error describing device api: {str(e)}"
+
+@mcp.tool()
+def get_wavetable_state(ctx: Context, track_index: int, device_index: int = 1,
+                        chain_index: int = 0) -> str:
+    """Read a Wavetable's modulation matrix, wavetable selection and voicing.
+
+    None of this appears in get_device_parameters - it lives on the
+    WavetableDevice object itself.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - device_index: Device number on the track (1-based).
+    - chain_index: Chain number inside a rack (1-based, 0 = not in a rack).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("get_wavetable_state", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "device_index": _to_zero_based(device_index, "device_index"),
+            "chain_index": _optional_to_zero_based(chain_index, "chain_index")})
+        return json.dumps(r, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting wavetable state: {str(e)}")
+        return f"Error getting wavetable state: {str(e)}"
+
+@mcp.tool()
+def set_wavetable_property(ctx: Context, track_index: int, name: str, value: int,
+                           device_index: int = 1, chain_index: int = 0) -> str:
+    """Set a Wavetable property that is not a device parameter.
+
+    Writable names:
+      oscillator_1_wavetable_category / oscillator_1_wavetable_index
+      oscillator_2_wavetable_category / oscillator_2_wavetable_index
+      oscillator_1_effect_mode / oscillator_2_effect_mode  (0=None 1=FM 2=Classic 3=Modern)
+      filter_routing  (0=Serial 1=Parallel 2=Split)
+      mono_poly  (0=Mono 1=Poly)
+      poly_voices, unison_mode, unison_voice_count
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - name: Property name from the list above.
+    - value: Integer value.
+    - device_index: Device number on the track (1-based).
+    - chain_index: Chain number inside a rack (1-based, 0 = not in a rack).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("set_wavetable_property", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "device_index": _to_zero_based(device_index, "device_index"),
+            "chain_index": _optional_to_zero_based(chain_index, "chain_index"),
+            "name": name, "value": value})
+        return "{0}: {1} -> {2}".format(
+            r.get("device_name"), r.get("property"), r.get("value"))
+    except Exception as e:
+        logger.error(f"Error setting wavetable property: {str(e)}")
+        return f"Error setting wavetable property: {str(e)}"
+
+@mcp.tool()
+def add_wavetable_mod_target(ctx: Context, track_index: int,
+                             parameter_name: str = "", parameter_index: int = 0,
+                             device_index: int = 1, chain_index: int = 0) -> str:
+    """Make a parameter a modulation target in Wavetable's matrix.
+
+    Reports which device parameters appeared as a result, which shows whether
+    the matrix amounts become ordinary automatable parameters.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - parameter_name: Target parameter name (or use parameter_index).
+    - parameter_index: Target parameter number (1-based).
+    - device_index: Device number on the track (1-based).
+    - chain_index: Chain number inside a rack (1-based, 0 = not in a rack).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("add_wavetable_mod_target", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "device_index": _to_zero_based(device_index, "device_index"),
+            "chain_index": _optional_to_zero_based(chain_index, "chain_index"),
+            "parameter_name": parameter_name or None,
+            "parameter_index": _optional_to_zero_based(
+                parameter_index, "parameter_index")})
+        return json.dumps(r, indent=2)
+    except Exception as e:
+        logger.error(f"Error adding modulation target: {str(e)}")
+        return f"Error adding modulation target: {str(e)}"
+
+@mcp.tool()
+def set_wavetable_modulation(ctx: Context, track_index: int, target_index: int,
+                             source: str, value: float, device_index: int = 1,
+                             chain_index: int = 0) -> str:
+    """Set one cell of Wavetable's modulation matrix.
+
+    Sources: amp_envelope, envelope_2, envelope_3, lfo_1, lfo_2, midi_note,
+    midi_velocity, midi_mod_wheel, midi_pitch_bend, midi_channel_pressure,
+    midi_random.
+
+    Live 11's API documented no setter for this; if this build has none the
+    call reports that rather than failing silently.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - target_index: Matrix target index from get_wavetable_state.
+    - source: Modulation source name.
+    - value: Modulation amount.
+    - device_index: Device number on the track (1-based).
+    - chain_index: Chain number inside a rack (1-based, 0 = not in a rack).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("set_wavetable_modulation", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "device_index": _to_zero_based(device_index, "device_index"),
+            "chain_index": _optional_to_zero_based(chain_index, "chain_index"),
+            "target_index": target_index, "source": source, "value": value})
+        return "{0}: target {1} <- {2} = {3}".format(
+            r.get("device_name"), r.get("target_index"),
+            r.get("source"), r.get("value"))
+    except Exception as e:
+        logger.error(f"Error setting wavetable modulation: {str(e)}")
+        return f"Error setting wavetable modulation: {str(e)}"
+
+
+@mcp.tool()
+def get_clip_properties(ctx: Context, track_index: int, clip_index: int) -> str:
+    """Read a Session clip's Clip-panel properties.
+
+    Covers Transpose, Clip Gain, Loop Position/Length, Start/End, warping and
+    whether the clip is deactivated. Audio-only properties are omitted for MIDI
+    clips rather than failing.
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("get_clip_properties", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "clip_index": _to_zero_based(clip_index, "clip_index")})
+        return json.dumps(r, indent=2)
+    except Exception as e:
+        logger.error(f"Error getting clip properties: {str(e)}")
+        return f"Error getting clip properties: {str(e)}"
+
+@mcp.tool()
+def set_clip_property(ctx: Context, track_index: int, clip_index: int,
+                      property_name: str,
+                      value: Union[str, int, float, bool]) -> str:
+    """Set one property on a Session clip.
+
+    Writable names:
+      name            - clip name
+      muted           - True deactivates the clip (the "0" key in Live)
+      color           - clip colour as an integer
+      pitch_coarse    - Transpose in semitones
+      pitch_fine      - fine tune in cents
+      looping         - loop on/off
+      loop_start / loop_end       - Loop Position and end, in beats
+      start_marker / end_marker   - clip Start/End, in beats
+      gain            - Clip Gain (audio clips)
+      warping         - warp on/off (audio clips)
+      warp_mode       - warp algorithm (audio clips)
+      velocity_amount - velocity-to-volume amount (MIDI clips)
+
+    Parameters:
+    - track_index: Track number (1-based).
+    - clip_index: Clip slot number (1-based).
+    - property_name: One of the names above.
+    - value: New value; type depends on the property.
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("set_clip_property", {
+            "track_index": _to_zero_based(track_index, "track_index"),
+            "clip_index": _to_zero_based(clip_index, "clip_index"),
+            "property_name": property_name, "value": value})
+        return "'{0}': {1} {2} -> {3}".format(
+            r.get("clip_name"), r.get("property"), r.get("before"), r.get("value"))
+    except Exception as e:
+        logger.error(f"Error setting clip property: {str(e)}")
+        return f"Error setting clip property: {str(e)}"
+
+
+@mcp.tool()
+def get_scenes(ctx: Context) -> str:
+    """List every scene with its name, state and which clips it holds.
+
+    A scene is a row of the Session grid. Use this to see which clips would
+    launch together.
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("get_scenes", {})
+        lines = ["%d scenes" % r.get("scene_count", 0), ""]
+        for s in r.get("scenes", []):
+            flags = []
+            if s.get("is_empty"):
+                flags.append("empty")
+            if s.get("is_triggered"):
+                flags.append("triggered")
+            tempo = s.get("tempo")
+            if tempo is not None and tempo > 0:
+                flags.append("tempo %.2f" % tempo)
+            head = "  %d. %s%s" % (s["index"] + 1, s.get("name") or "(unnamed)",
+                                   ("  [" + ", ".join(flags) + "]") if flags else "")
+            lines.append(head)
+            for c in s.get("clips", []):
+                lines.append("       track %d: %s" % (
+                    c["track_index"] + 1, c.get("clip_name") or "(unnamed)"))
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"Error getting scenes: {str(e)}")
+        return f"Error getting scenes: {str(e)}"
+
+@mcp.tool()
+def fire_scene(ctx: Context, scene_index: int) -> str:
+    """Launch a scene: every clip in that row starts, and tracks whose slot in
+    the row is empty are stopped.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("fire_scene", {
+            "scene_index": _to_zero_based(scene_index, "scene_index")})
+        return "Fired scene {0}: '{1}'".format(scene_index, r.get("name") or "")
+    except Exception as e:
+        logger.error(f"Error firing scene: {str(e)}")
+        return f"Error firing scene: {str(e)}"
+
+@mcp.tool()
+def create_scene(ctx: Context, index: int = -1) -> str:
+    """Insert a new scene.
+
+    Parameters:
+    - index: Position (1-based), or -1 to append at the end.
+    """
+    try:
+        ableton = get_ableton_connection()
+        payload = {"index": -1 if index == -1
+                   else _to_zero_based(index, "index")}
+        r = ableton.send_command("create_scene", payload)
+        return "Created scene at position {0}; {1} scenes total".format(
+            r.get("index", 0) + 1, r.get("scene_count"))
+    except Exception as e:
+        logger.error(f"Error creating scene: {str(e)}")
+        return f"Error creating scene: {str(e)}"
+
+@mcp.tool()
+def delete_scene(ctx: Context, scene_index: int) -> str:
+    """Delete a scene and everything in that row.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("delete_scene", {
+            "scene_index": _to_zero_based(scene_index, "scene_index")})
+        return "Deleted scene {0} ('{1}'); {2} scenes remain".format(
+            scene_index, r.get("name") or "", r.get("scene_count"))
+    except Exception as e:
+        logger.error(f"Error deleting scene: {str(e)}")
+        return f"Error deleting scene: {str(e)}"
+
+@mcp.tool()
+def duplicate_scene(ctx: Context, scene_index: int) -> str:
+    """Duplicate a scene, inserting the copy directly below it.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("duplicate_scene", {
+            "scene_index": _to_zero_based(scene_index, "scene_index")})
+        return "Duplicated scene {0} to position {1}; {2} scenes total".format(
+            scene_index, r.get("new_index", 0) + 1, r.get("scene_count"))
+    except Exception as e:
+        logger.error(f"Error duplicating scene: {str(e)}")
+        return f"Error duplicating scene: {str(e)}"
+
+@mcp.tool()
+def set_scene_property(ctx: Context, scene_index: int, property_name: str,
+                       value: Union[str, int, float]) -> str:
+    """Set a scene's name, colour, tempo or time signature.
+
+    Writable names: name, color, tempo, time_signature_numerator,
+    time_signature_denominator.
+
+    Writing tempo or a time signature from the API also switches that scene
+    control on, so no separate enable step is needed.
+
+    Parameters:
+    - scene_index: Scene number (1-based).
+    - property_name: One of the names above.
+    - value: New value.
+    """
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("set_scene_property", {
+            "scene_index": _to_zero_based(scene_index, "scene_index"),
+            "property_name": property_name, "value": value})
+        return "Scene {0} ('{1}'): {2} {3} -> {4}".format(
+            scene_index, r.get("name") or "", r.get("property"),
+            r.get("before"), r.get("value"))
+    except Exception as e:
+        logger.error(f"Error setting scene property: {str(e)}")
+        return f"Error setting scene property: {str(e)}"
+
+@mcp.tool()
+def undo(ctx: Context) -> str:
+    """Undo the last action in Live."""
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("undo", {})
+        if not r.get("undone"):
+            return "Nothing to undo"
+        return "Undone. can_undo={0}, can_redo={1}".format(
+            r.get("can_undo"), r.get("can_redo"))
+    except Exception as e:
+        logger.error(f"Error undoing: {str(e)}")
+        return f"Error undoing: {str(e)}"
+
+@mcp.tool()
+def redo(ctx: Context) -> str:
+    """Redo the last undone action in Live."""
+    try:
+        ableton = get_ableton_connection()
+        r = ableton.send_command("redo", {})
+        if not r.get("redone"):
+            return "Nothing to redo"
+        return "Redone. can_undo={0}, can_redo={1}".format(
+            r.get("can_undo"), r.get("can_redo"))
+    except Exception as e:
+        logger.error(f"Error redoing: {str(e)}")
+        return f"Error redoing: {str(e)}"
+
+
 # Main execution
 def main():
     """Run the MCP server"""

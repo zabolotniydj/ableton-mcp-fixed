@@ -1,6 +1,11 @@
 # Ableton MCP Extended
 **Control Ableton Live using natural language via AI assistants like Claude or Cursor. This project provides a robust Model Context Protocol (MCP) server that translates natural language commands into precise actions within your Ableton Live session.**
 
+> **Форк с доработками.** Добавлено 22 команды Remote Script и 25 инструментов MCP:
+> чтение MIDI-нот, сцены, свойства session-клипов, микшер (mute/solo/arm, посылы),
+> матрица модуляции Wavetable, undo/redo.
+> Подробности и установка — в [FORK-NOTES.md](FORK-NOTES.md).
+
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![Ableton Live 11+](https://img.shields.io/badge/Ableton%20Live-11+-orange.svg)](https://www.ableton.com/)
